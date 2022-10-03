@@ -1,10 +1,12 @@
+use std::{error::Error, fs::File, io::BufWriter, path::Path};
+
 use image::{
+    codecs::jpeg,
     error::{ImageFormatHint, UnsupportedError, UnsupportedErrorKind},
     io::Reader,
-    jpeg, ColorType, GenericImageView, ImageEncoder, ImageFormat, ImageResult,
+    ColorType, ImageEncoder, ImageFormat, ImageResult,
 };
 use rand::{rngs::SmallRng, seq::SliceRandom, Rng, SeedableRng};
-use std::{error::Error, fs::File, io::BufWriter, path::Path};
 
 pub struct Image {
     format: ImageFormat,
@@ -14,8 +16,8 @@ pub struct Image {
     height: u32,
 }
 
-pub fn load_image<P: AsRef<Path>>(path: P) -> Result<Image, Box<dyn Error>> {
-    let reader = Reader::open(path.as_ref())?.with_guessed_format()?;
+pub fn load_image(path: impl AsRef<Path>) -> Result<Image, Box<dyn Error>> {
+    let reader = Reader::open(path)?.with_guessed_format()?;
     let format = reader.format().ok_or_else(|| {
         UnsupportedError::from_format_and_kind(
             ImageFormatHint::Unknown,
@@ -24,37 +26,34 @@ pub fn load_image<P: AsRef<Path>>(path: P) -> Result<Image, Box<dyn Error>> {
     })?;
 
     let image = reader.decode()?;
-    let pixels = image.to_bytes();
-    let color = image.color();
     Ok(Image {
         format,
-        pixels,
-        color,
-        width: image.width(),
         height: image.height(),
+        width: image.width(),
+        color: image.color(),
+        pixels: image.into_bytes(),
     })
 }
 
-pub fn write_image<P: AsRef<Path>>(path: P, img: Image) -> ImageResult<()> {
+pub fn write_image(path: impl AsRef<Path>, img: Image) -> ImageResult<()> {
     // must handle Jpeg case on its own because the default quality is too low
-    match img.format {
-        ImageFormat::Jpeg => {
-            let writer = &mut BufWriter::new(File::create(path)?);
-            jpeg::JPEGEncoder::new_with_quality(writer, 100).write_image(
-                &img.pixels,
-                img.width,
-                img.height,
-                img.color,
-            )
-        }
-        format => image::save_buffer_with_format(
+    if img.format == ImageFormat::Jpeg {
+        let writer = &mut BufWriter::new(File::create(path)?);
+        jpeg::JpegEncoder::new_with_quality(writer, 100).write_image(
+            &img.pixels,
+            img.width,
+            img.height,
+            img.color,
+        )
+    } else {
+        image::save_buffer_with_format(
             path,
             &img.pixels,
             img.width,
             img.height,
             img.color,
-            format,
-        ),
+            img.format,
+        )
     }
 }
 
@@ -63,8 +62,8 @@ fn byte(num: u32, i: usize) -> u8 {
     num.to_le_bytes()[i]
 }
 
-pub fn encrypt_image(img: &mut Image, key: i128) {
-    let mut rng = SmallRng::from_seed(key.to_le_bytes());
+pub fn encrypt_image(img: &mut Image, key: u64) {
+    let mut rng = SmallRng::seed_from_u64(key);
     // this value is used in the first step of encrypting the pixels, so it must be obtained before other RNG calls
     let start = rng.gen::<u32>();
 
@@ -107,8 +106,8 @@ pub fn encrypt_image(img: &mut Image, key: i128) {
     img.pixels = enc_pixels;
 }
 
-pub fn decrypt_image(img: &mut Image, key: i128) {
-    let mut rng = SmallRng::from_seed(key.to_le_bytes());
+pub fn decrypt_image(img: &mut Image, key: u64) {
+    let mut rng = SmallRng::seed_from_u64(key);
     // get the same initial value used for encrypting
     let start = rng.gen::<u32>();
 
